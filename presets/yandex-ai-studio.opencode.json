@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "yandex/gpt://{FOLDER_ID}/qwen3-235b-a22b-fp8/latest",
+  "model": "yandex/gpt://{FOLDER_ID}/yandexgpt/latest",
   "instructions": ["~/.config/opencode/zareka.ru.md"],
   "provider": {
     "yandex": {
@@ -15,11 +15,18 @@
         }
       },
       "models": {
-        "gpt://{FOLDER_ID}/qwen3-235b-a22b-fp8/latest": {
-          "name": "Qwen3 235B (Yandex AI Studio)",
+        "gpt://{FOLDER_ID}/yandexgpt/latest": {
+          "name": "YandexGPT 5.1 Pro (Яндекс)",
           "limit": {
-            "context": 262144,
-            "output": 32768
+            "context": 32768,
+            "output": 8192
+          }
+        },
+        "gpt://{FOLDER_ID}/yandexgpt-lite/latest": {
+          "name": "YandexGPT 5 Lite (Яндекс)",
+          "limit": {
+            "context": 32768,
+            "output": 8192
           }
         }
       }

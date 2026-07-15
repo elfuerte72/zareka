@@ -1,17 +1,17 @@
 import type { OpencodeClient } from "@opencode-ai/sdk"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard } from "@opentui/react"
-import type { ModelRef } from "./config"
+import { listModels, type ModelRef } from "./config"
 import type { Player } from "./audio"
 import { toolLabel } from "./tools"
 import {
+  emblemArt,
   emblemMotto,
-  emblemStar,
-  emblemWordmark,
   glyph,
   spinnerFrames,
   syntaxStyle,
   theme,
+  wordmarkArt,
 } from "./theme"
 
 type ServerHandle = { url: string; close(): void }
@@ -22,6 +22,33 @@ type Item =
   | { kind: "tool"; id: string; tool: string; status: "pending" | "ok" | "error"; title?: string }
   | { kind: "system"; id: string; text: string }
   | { kind: "error"; id: string; text: string }
+
+type Mode = "plan" | "build"
+
+const MODES: Record<Mode, { title: string; hint: string; color: string }> = {
+  plan: { title: "ГОСПЛАН", hint: "режим планирования", color: "#ffd700" },
+  build: { title: "ИСПОЛКОМ", hint: "режим исполнения", color: "#e4181c" },
+}
+
+interface Command {
+  name: string
+  aliases: string[]
+  description: string
+}
+
+const COMMANDS: Command[] = [
+  { name: "/открыть-дело", aliases: ["/new"], description: "новая сессия" },
+  { name: "/чистка", aliases: ["/clear"], description: "очистить экран" },
+  { name: "/пятилетка", aliases: ["/init"], description: "изучить проект и составить AGENTS.md" },
+  { name: "/распределение", aliases: ["/model"], description: "выбрать модель" },
+  { name: "/главк", aliases: ["/provider"], description: "выбрать провайдера" },
+  { name: "/помощь", aliases: ["/help"], description: "справка по командам" },
+  { name: "/выход", aliases: ["/exit", "/quit"], description: "покинуть пост" },
+]
+
+const INIT_PROMPT =
+  "Изучи структуру этого проекта (файлы, зависимости, команды сборки и тестов) и создай файл AGENTS.md " +
+  "с краткой инструкцией для кодинг-агента: что это за проект, как собирать, как тестировать, какие есть соглашения. Пиши по-русски."
 
 interface ServerEvent {
   type: string
@@ -43,13 +70,6 @@ interface ServerEvent {
   }
 }
 
-const COMMANDS = [
-  { name: "/новая", description: "начать новую сессию" },
-  { name: "/очистить", description: "очистить экран" },
-  { name: "/помощь", description: "справка по командам" },
-  { name: "/выход", description: "выйти из Зареки" },
-]
-
 let idCounter = 0
 const localId = () => `local-${++idCounter}`
 
@@ -60,8 +80,9 @@ export function App(props: {
   server: ServerHandle
   player: Player
 }) {
-  const { client, model, directory, player } = props
+  const { client, directory, player } = props
   const ss = useMemo(() => syntaxStyle(), [])
+  const models = useMemo(() => listModels(), [])
 
   const [items, setItems] = useState<Item[]>([])
   const [draft, setDraft] = useState("")
@@ -70,12 +91,21 @@ export function App(props: {
   const [tick, setTick] = useState(0)
   const [permission, setPermission] = useState<{ id: string; sessionID: string; title: string } | null>(null)
   const [musicOn, setMusicOn] = useState(player.playing)
+  const [mode, setMode] = useState<Mode>("build")
+  const [model, setModel] = useState<ModelRef>(props.model)
+  const [picker, setPicker] = useState<"model" | "provider" | null>(null)
 
   const sessionRef = useRef<string | undefined>(undefined)
   const permissionRef = useRef(permission)
   permissionRef.current = permission
   const busyRef = useRef(busySince)
   busyRef.current = busySince
+  const pickerRef = useRef(picker)
+  pickerRef.current = picker
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const modelRef = useRef(model)
+  modelRef.current = model
 
   // Подписка на поток событий сервера (один раз).
   useEffect(() => {
@@ -105,19 +135,25 @@ export function App(props: {
   }, [busySince])
 
   useKeyboard((key) => {
-    // Пока играет гимн — Esc его выключает и больше ничего.
-    if (player.playing) {
-      if (key.name === "escape") {
-        player.stop()
-        setMusicOn(false)
-        return
-      }
-    }
     if (key.ctrl && key.name === "c") {
       player.stop()
       process.exit(0)
     }
+    // Shift+Tab — переключение режима Госплан/Исполком.
+    if (key.name === "tab" && key.shift) {
+      setMode((m) => (m === "plan" ? "build" : "plan"))
+      return
+    }
     if (key.name === "escape") {
+      if (player.playing) {
+        player.stop()
+        setMusicOn(false)
+        return
+      }
+      if (pickerRef.current) {
+        setPicker(null)
+        return
+      }
       if (permissionRef.current) {
         void respond("reject")
         return
@@ -199,15 +235,20 @@ export function App(props: {
     return created.data.id
   }
 
-  async function sendPrompt(text: string) {
-    push({ kind: "user", id: localId(), text })
+  async function sendPrompt(text: string, opts?: { silent?: boolean }) {
+    if (!opts?.silent) push({ kind: "user", id: localId(), text })
     setBusySince(Date.now())
     try {
       const id = await ensureSession()
+      const m = modelRef.current
       await client.session.prompt({
         path: { id },
         query: { directory },
-        body: { model: { providerID: model.providerID, modelID: model.modelID }, parts: [{ type: "text", text }] },
+        body: {
+          model: { providerID: m.providerID, modelID: m.modelID },
+          agent: modeRef.current,
+          parts: [{ type: "text", text }],
+        },
         throwOnError: true,
       })
     } catch (error) {
@@ -216,29 +257,45 @@ export function App(props: {
     }
   }
 
-  function runCommand(name: string) {
-    switch (name) {
+  function findCommand(input: string): Command | undefined {
+    const lower = input.toLowerCase()
+    return (
+      COMMANDS.find((c) => c.name === lower || c.aliases.includes(lower)) ??
+      COMMANDS.find((c) => c.name.startsWith(lower))
+    )
+  }
+
+  function runCommand(cmd: Command) {
+    switch (cmd.name) {
       case "/выход":
         player.stop()
         process.exit(0)
         break
-      case "/очистить":
+      case "/чистка":
         setItems([])
         break
-      case "/новая":
+      case "/открыть-дело":
         sessionRef.current = undefined
         setItems([])
-        push({ kind: "system", id: localId(), text: "Начата новая сессия." })
+        push({ kind: "system", id: localId(), text: `${glyph.star} Дело открыто. Новая сессия.` })
+        break
+      case "/пятилетка":
+        push({ kind: "system", id: localId(), text: `${glyph.star} Пятилетка объявлена: составляем AGENTS.md.` })
+        void sendPrompt(INIT_PROMPT, { silent: true })
+        break
+      case "/распределение":
+        setPicker("model")
+        break
+      case "/главк":
+        setPicker("provider")
         break
       case "/помощь":
         push({
           kind: "system",
           id: localId(),
-          text: "Команды: " + COMMANDS.map((c) => `${c.name} — ${c.description}`).join("; "),
+          text: COMMANDS.map((c) => `${c.name} (${c.aliases[0]}) — ${c.description}`).join("\n"),
         })
         break
-      default:
-        push({ kind: "system", id: localId(), text: `Неизвестная команда: ${name}` })
     }
   }
 
@@ -252,35 +309,52 @@ export function App(props: {
       setMusicOn(false)
     }
     if (text.startsWith("/")) {
-      const exact = COMMANDS.find((c) => c.name === text)
-      const prefix = COMMANDS.filter((c) => c.name.startsWith(text))
-      runCommand(exact?.name ?? prefix[0]?.name ?? text)
+      const cmd = findCommand(text)
+      if (cmd) runCommand(cmd)
+      else push({ kind: "system", id: localId(), text: `Неизвестная команда: ${text}. Смотрите /помощь.` })
       return
     }
     void sendPrompt(text)
   }
 
   const slash = draft.startsWith("/")
-  const suggestions = slash ? COMMANDS.filter((c) => c.name.startsWith(draft)) : []
+  const suggestions = slash
+    ? COMMANDS.filter((c) => c.name.startsWith(draft.toLowerCase()) || c.aliases.some((a) => a.startsWith(draft.toLowerCase())))
+    : []
   const seconds = busySince != null ? Math.floor((Date.now() - busySince) / 1000) : 0
   const frame = spinnerFrames[tick % spinnerFrames.length]
+  const m = MODES[mode]
+  const inputFocused = !permission && !picker
 
   return (
     <box flexDirection="column" width="100%" height="100%">
-      {/* Шапка-эмблема */}
+      {/* Шапка: эмблема слева, CCCP и подписи справа */}
       <box
         border
         borderStyle="double"
         borderColor={theme.accent}
-        flexDirection="column"
+        height={emblemArt.length + 2}
+        flexDirection="row"
+        justifyContent="center"
         alignItems="center"
       >
-        <text fg={theme.gold}>{emblemStar}</text>
-        <text fg={theme.accent}>
-          <b>{emblemWordmark}</b>
-        </text>
-        <text fg={theme.gold}>{emblemMotto}</text>
-        <text fg={theme.muted}>модель: {model.label}</text>
+        <box flexDirection="column" marginRight={4}>
+          {emblemArt.map((line, i) => (
+            <text key={i} fg={theme.accent}>
+              {line}
+            </text>
+          ))}
+        </box>
+        <box flexDirection="column">
+          {wordmarkArt.map((line, i) => (
+            <text key={i} fg={theme.gold}>
+              {line}
+            </text>
+          ))}
+          <text> </text>
+          <text fg={theme.gold}>{emblemMotto}</text>
+          <text fg={theme.muted}>модель: {model.label}</text>
+        </box>
       </box>
 
       {/* Транскрипт */}
@@ -292,47 +366,107 @@ export function App(props: {
 
       {/* Модалка разрешения */}
       {permission && (
-        <box border borderStyle="double" borderColor={theme.gold} flexDirection="column" paddingLeft={1} paddingRight={1}>
-          <text fg={theme.gold}>{glyph.star} Требуется разрешение</text>
+        <box
+          border
+          borderStyle="double"
+          borderColor={theme.gold}
+          height={5}
+          flexDirection="column"
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text fg={theme.gold}>{glyph.star} Требуется санкция</text>
           <text fg={theme.user}>{permission.title}</text>
-          <text fg={theme.muted}>1 — разрешить · 2 — на сессию · 3/Esc — отклонить</text>
+          <text fg={theme.muted}>1 — разрешить · 2 — на всю сессию · 3/Esc — отказать</text>
           <PermissionKeys onRespond={respond} />
         </box>
       )}
 
+      {/* Пикер модели / провайдера */}
+      {picker === "model" && (
+        <box border borderStyle="double" borderColor={theme.gold} height={Math.min(models.length, 6) + 3} flexDirection="column" paddingLeft={1} paddingRight={1}>
+          <text fg={theme.gold}>{glyph.star} Распределение: выберите модель (Esc — отмена)</text>
+          <select
+            focused
+            options={models.map((mm) => ({
+              name: (mm.modelID === model.modelID ? "● " : "  ") + mm.label,
+              description: mm.providerID,
+              value: mm,
+            }))}
+            onSelect={(_i, opt) => {
+              const value = opt?.value as ModelRef | undefined
+              if (value) {
+                setModel(value)
+                push({ kind: "system", id: localId(), text: `${glyph.ok} Распределено: ${value.label}` })
+              }
+              setPicker(null)
+            }}
+          />
+        </box>
+      )}
+      {picker === "provider" && (
+        <box border borderStyle="double" borderColor={theme.gold} height={5} flexDirection="column" paddingLeft={1} paddingRight={1}>
+          <text fg={theme.gold}>{glyph.star} Главк: выберите провайдера (Esc — отмена)</text>
+          <select
+            focused
+            options={[
+              { name: "● Yandex AI Studio — действующий", description: "оплата в рублях", value: "yandex" },
+              { name: "  GigaChat (Сбер) — ожидает постановления", description: "в разработке", value: "gigachat" },
+            ]}
+            onSelect={(_i, opt) => {
+              if (opt?.value === "gigachat") {
+                push({ kind: "system", id: localId(), text: "ГигаЧат ещё не введён в эксплуатацию — следите за пятилеткой." })
+              }
+              setPicker(null)
+            }}
+          />
+        </box>
+      )}
+
       {/* Подсказка слэш-команд */}
-      {slash && suggestions.length > 0 && (
-        <box border borderStyle="rounded" borderColor={theme.gold} flexDirection="column" paddingLeft={1} paddingRight={1}>
+      {inputFocused && slash && suggestions.length > 0 && (
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={theme.gold}
+          height={suggestions.length + 2}
+          flexDirection="column"
+          paddingLeft={1}
+          paddingRight={1}
+        >
           {suggestions.map((c) => (
             <text key={c.name} fg={theme.gold}>
-              {c.name} <span fg={theme.muted}>— {c.description}</span>
+              {c.name} <span fg={theme.muted}>({c.aliases[0]}) — {c.description}</span>
             </text>
           ))}
         </box>
       )}
 
       {/* Поле ввода */}
-      <box border borderStyle="rounded" borderColor={theme.accent} paddingLeft={1} paddingRight={1}>
+      <box border borderStyle="rounded" borderColor={theme.accent} height={3} paddingLeft={1} paddingRight={1}>
         <input
           key={resetKey}
-          focused={!permission}
-          placeholder="Спросите Зареку…  ( / — команды, Enter — отправить )"
+          focused={inputFocused}
+          placeholder="Слушаю, товарищ…  (/ — команды, Shift+Tab — режим, Enter — отправить)"
           onInput={setDraft}
           // Тег <input> пересекается с DOM-типами React; onSubmit у OpenTUI отдаёт строку.
           onSubmit={handleSubmit as never}
         />
       </box>
 
-      {/* Футер-статус */}
-      <box paddingLeft={1} flexDirection="row">
+      {/* Футер: режим слева, статус справа */}
+      <box height={1} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+        <text fg={m.color}>
+          {glyph.hammerSickle} {m.title} <span fg={theme.muted}>— {m.hint} · Shift+Tab</span>
+        </text>
         {musicOn && player.playing ? (
-          <text fg={theme.gold}>♪ Гимн СССР — Esc, чтобы выключить</text>
+          <text fg={theme.gold}>♪ Гимн — Esc, чтобы выключить</text>
         ) : busySince != null ? (
           <text fg={theme.accent}>
-            {frame} думаю… {seconds}с <span fg={theme.muted}>· Esc — прервать</span>
+            {frame} трудимся… {seconds}с <span fg={theme.muted}>· Esc — прервать</span>
           </text>
         ) : (
-          <text fg={theme.muted}>Готова {glyph.hammerSickle}</text>
+          <text fg={theme.muted}>К труду готова {glyph.hammerSickle}</text>
         )}
       </box>
     </box>
@@ -366,9 +500,9 @@ function MessageView({ item, ss }: { item: Item; ss: ReturnType<typeof syntaxSty
     const color = item.status === "ok" ? theme.success : item.status === "error" ? theme.error : theme.accent
     const mark = item.status === "ok" ? glyph.ok : item.status === "error" ? glyph.fail : glyph.pending
     return (
-      <box border borderStyle="rounded" borderColor={color} paddingLeft={1} paddingRight={1} paddingTop={1} marginTop={1}>
+      <box flexDirection="row" paddingTop={0} marginTop={0}>
         <text fg={color}>
-          {mark} {toolLabel(item.tool)}
+          {"  "}{glyph.branch} {mark} {toolLabel(item.tool)}
           {item.title ? ` — ${item.title}` : ""}
         </text>
       </box>
@@ -376,8 +510,12 @@ function MessageView({ item, ss }: { item: Item; ss: ReturnType<typeof syntaxSty
   }
   if (item.kind === "system") {
     return (
-      <box paddingTop={1}>
-        <text fg={theme.gold}>{item.text}</text>
+      <box flexDirection="column" paddingTop={1}>
+        {item.text.split("\n").map((ln, i) => (
+          <text key={i} fg={theme.gold}>
+            {ln}
+          </text>
+        ))}
       </box>
     )
   }
@@ -430,7 +568,8 @@ function inlineClean(s: string): string {
     .replace(/`(.+?)`/g, "$1")
 }
 
-// Лёгкая проза: заголовки, списки, обычные строки. Без полноценного markdown.
+// Лёгкая проза: заголовки, списки, обычные строки. Без вложенных <b> —
+// они ломали layout в реальном терминале (строки накладывались).
 function ProseBlock({ text }: { text: string }) {
   const lines = text.split("\n")
   return (
@@ -441,11 +580,16 @@ function ProseBlock({ text }: { text: string }) {
         if (heading)
           return (
             <text key={i} fg={theme.gold}>
-              <b>{inlineClean(heading[2])}</b>
+              § {inlineClean(heading[2])}
             </text>
           )
         const li = /^\s*[-*]\s+(.*)$/.exec(ln)
-        if (li) return <text key={i}>  {glyph.arrow} {inlineClean(li[1])}</text>
+        if (li)
+          return (
+            <text key={i}>
+              {"  "}{glyph.arrow} {inlineClean(li[1])}
+            </text>
+          )
         return <text key={i}>{inlineClean(ln)}</text>
       })}
     </box>
