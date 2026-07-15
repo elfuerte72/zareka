@@ -28,7 +28,7 @@ curl -fsSL https://opencode.ai/install | bash
 ### 3. Установите Зареку
 
 ```bash
-git clone https://github.com/penkin/zareka && cd zareka
+git clone https://github.com/elfuerte72/zareka && cd zareka
 ./install.sh
 ```
 
@@ -52,7 +52,7 @@ opencode
 
 ## Известные ограничения
 
-- Поддержка tool calling у OpenAI-совместимого endpoint Yandex для open-source моделей проверяется — если агент спотыкается на вызовах инструментов, заведите issue с логом.
+- Tool calling у Qwen3 235B на endpoint Яндекса проверен и работает (агентный цикл opencode проходит целиком). Если агент спотыкается на вызовах инструментов — заведите issue с логом.
 - Русский пока только у агента (промпты), интерфейс TUI — английский. Полностью русский TUI — следующий этап (форк с автопереводом).
 
 ## Почему «Зарека»
