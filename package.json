@@ -1,0 +1,21 @@
+{
+  "name": "zareka",
+  "version": "0.1.0",
+  "description": "Зарека — русскоязычный кодинг-агент в терминале",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "zareka": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "smoke": "bun run src/index.ts --smoke"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "latest",
+    "@opentui/core": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  }
+}
