@@ -10,11 +10,42 @@ import { App } from "./ui"
 const model = defaultModel()
 const directory = process.cwd()
 
-const { client, server } = await createOpencode({
-  port: Number(process.env.ZAREKA_PORT ?? 4996),
-  timeout: 20_000,
-})
+const { client, server } = await startServer()
 process.on("exit", () => server.close())
+
+// Порт может держать осиротевший `opencode serve` от прошлого запуска —
+// тогда пробуем следующие, а не падаем с невнятным «exited with code 1».
+async function startServer() {
+  const base = Number(process.env.ZAREKA_PORT ?? 4996)
+  for (let port = base; port < base + 10; port++) {
+    if (await portBusy(port)) continue
+    try {
+      return await createOpencode({ port, timeout: 20_000 })
+    } catch (error) {
+      if (await portBusy(port)) continue // порт заняли между проверкой и стартом
+      throw error
+    }
+  }
+  console.error(
+    `Порты ${base}–${base + 9} заняты. Найдите старый сервер: lsof -nP -i :${base}\n` +
+      `и остановите его (kill <PID>), либо задайте другой порт: ZAREKA_PORT=5100 bun start`,
+  )
+  process.exit(1)
+}
+
+async function portBusy(port: number): Promise<boolean> {
+  try {
+    const conn = await Bun.connect({
+      hostname: "127.0.0.1",
+      port,
+      socket: { data() {} },
+    })
+    conn.end()
+    return true
+  } catch {
+    return false
+  }
+}
 
 // «Закрытый контур»: внешние MCP-серверы отключаем — их инструменты
 // раздувают запрос (у Яндекса лимит 100 инструментов) и уводят данные наружу.
