@@ -6,6 +6,8 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
     "types": ["bun"]
   },
   "include": ["src"]

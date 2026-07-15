@@ -5,17 +5,21 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "zareka": "./src/index.ts"
+    "zareka": "./src/index.tsx"
   },
   "scripts": {
-    "start": "bun run src/index.ts",
-    "smoke": "bun run src/index.ts --smoke"
+    "start": "bun run src/index.tsx",
+    "smoke": "bun run src/index.tsx --smoke"
   },
   "dependencies": {
     "@opencode-ai/sdk": "latest",
-    "@opentui/core": "latest"
+    "@opentui-ui/dialog": "^0.1.2",
+    "@opentui/core": "latest",
+    "@opentui/react": "^0.4.3",
+    "react": "^19.2.7"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.14"
+    "@types/bun": "^1.3.14",
+    "@types/react": "19"
   }
 }
