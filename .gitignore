@@ -1,0 +1,6 @@
+# Локальный инструментарий Claude Code / скиллы — не часть Зареки
+.claude/
+.agents/
+skills-lock.json
+
+.DS_Store

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "yandex/gpt://{FOLDER_ID}/qwen3-235b-a22b-fp8/latest",
+  "instructions": ["~/.config/opencode/zareka.ru.md"],
+  "provider": {
+    "yandex": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Yandex AI Studio",
+      "options": {
+        "baseURL": "https://llm.api.cloud.yandex.net/v1",
+        "apiKey": "{env:YANDEX_API_KEY}",
+        "headers": {
+          "x-folder-id": "{FOLDER_ID}",
+          "x-data-logging-enabled": "false"
+        }
+      },
+      "models": {
+        "gpt://{FOLDER_ID}/qwen3-235b-a22b-fp8/latest": {
+          "name": "Qwen3 235B (Yandex AI Studio)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        }
+      }
+    }
+  }
+}
