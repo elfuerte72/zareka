@@ -9,3 +9,8 @@ skills-lock.json
 
 .DS_Store
 node_modules/
+
+# Референсные изображения не распространяем (права)
+*.jpeg
+*.jpg
+*.png
