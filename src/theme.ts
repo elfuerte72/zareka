@@ -50,7 +50,8 @@ export const wordmarkArt = [
   "▀████  ▀████  ▀████  ██",
 ] as const
 
-export const emblemMotto = "Рабоче-крестьянский кодинг-агент «Зарека»"
+export const emblemMotto = "Народный комиссариат программирования"
+export const agentName = "Наркомпрог"
 
 // Кадры спиннера (Braille — узкие, не ambiguous по ширине).
 export const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const

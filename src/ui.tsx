@@ -1,10 +1,11 @@
 import type { OpencodeClient } from "@opencode-ai/sdk"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useKeyboard } from "@opentui/react"
+import { useKeyboard, useRenderer } from "@opentui/react"
 import { listModels, type ModelRef } from "./config"
 import type { Player } from "./audio"
 import { toolLabel } from "./tools"
 import {
+  agentName,
   emblemArt,
   emblemMotto,
   glyph,
@@ -63,10 +64,12 @@ interface ServerEvent {
       tool?: string
       state?: { status?: string; title?: string }
     }
+    info?: { id?: string; role?: string; sessionID?: string; error?: { name?: string } & Record<string, unknown> }
+    delta?: string
     sessionID?: string
     id?: string
     title?: string
-    error?: { message?: string } | string
+    error?: unknown
   }
 }
 
@@ -79,8 +82,11 @@ export function App(props: {
   directory: string
   server: ServerHandle
   player: Player
+  // Карта отключения инструментов: все внешние MCP выключены («закрытый контур»).
+  disabledTools: Record<string, boolean>
 }) {
-  const { client, directory, player } = props
+  const { client, directory, player, disabledTools } = props
+  const renderer = useRenderer()
   const ss = useMemo(() => syntaxStyle(), [])
   const models = useMemo(() => listModels(), [])
 
@@ -96,6 +102,8 @@ export function App(props: {
   const [picker, setPicker] = useState<"model" | "provider" | null>(null)
 
   const sessionRef = useRef<string | undefined>(undefined)
+  // Роли сообщений по messageID — чтобы не рендерить эхо реплики пользователя как ответ агента.
+  const rolesRef = useRef(new Map<string, string>())
   const permissionRef = useRef(permission)
   permissionRef.current = permission
   const busyRef = useRef(busySince)
@@ -106,6 +114,18 @@ export function App(props: {
   modeRef.current = mode
   const modelRef = useRef(model)
   modelRef.current = model
+
+  // Полное восстановление терминала при выходе — иначе после закрытия
+  // в шелл сыплются коды мыши/клавиатуры («сами по себе цифры»).
+  function quit(): never {
+    try {
+      renderer.destroy()
+    } catch {
+      // рендерер мог быть уже разрушен
+    }
+    player.stop()
+    process.exit(0)
+  }
 
   // Подписка на поток событий сервера (один раз).
   useEffect(() => {
@@ -136,8 +156,7 @@ export function App(props: {
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") {
-      player.stop()
-      process.exit(0)
+      quit()
     }
     // Shift+Tab — переключение режима Госплан/Исполком.
     if (key.name === "tab" && key.shift) {
@@ -165,8 +184,11 @@ export function App(props: {
     }
   })
 
+  // Лента ограничена, чтобы не копить бесконечный DOM (паттерн opencode/openclaw).
+  const MAX_ITEMS = 150
+
   function push(item: Item) {
-    setItems((prev) => [...prev, item])
+    setItems((prev) => [...prev, item].slice(-MAX_ITEMS))
   }
 
   function upsert(id: string, make: () => Item, patch: (it: Item) => Item) {
@@ -181,15 +203,30 @@ export function App(props: {
 
   function handleEvent(event: ServerEvent) {
     const p = event.properties
-    if (event.type === "message.part.updated" && p?.part) {
+    if (event.type === "message.updated" && p?.info?.id && p.info.role) {
+      rolesRef.current.set(p.info.id, p.info.role)
+      // Ошибка ассистента приходит в info.error; прерывание пользователем — не ошибка.
+      const err = p.info.error
+      if (err && err.name !== "MessageAbortedError") {
+        push({ kind: "error", id: `err-${p.info.id}`, text: humanizeError(msg(err)) })
+        setBusySince(null)
+      }
+    } else if (event.type === "message.part.updated" && p?.part) {
       const part = p.part
       if (sessionRef.current && part.sessionID && part.sessionID !== sessionRef.current) return
+      // Части реплики пользователя не рендерим — свою реплику мы уже показали при отправке.
+      if (part.messageID && rolesRef.current.get(part.messageID) === "user") return
       const id = part.id ?? part.callID ?? localId()
-      if (part.type === "text" && typeof part.text === "string") {
+      if (part.type === "text" && (typeof part.text === "string" || typeof p.delta === "string")) {
+        // Снапшот part.text приоритетен; delta конкатенируем, только если снапшота нет.
+        const delta = p.delta
         upsert(
           id,
-          () => ({ kind: "assistant", id, text: part.text!, done: false }),
-          (it) => (it.kind === "assistant" ? { ...it, text: part.text! } : it),
+          () => ({ kind: "assistant", id, text: part.text ?? delta ?? "", done: false }),
+          (it) =>
+            it.kind === "assistant"
+              ? { ...it, text: typeof part.text === "string" ? part.text : it.text + (delta ?? "") }
+              : it,
         )
       } else if (part.type === "tool" && part.tool) {
         const status = part.state?.status === "completed" ? "ok" : part.state?.status === "error" ? "error" : "pending"
@@ -204,7 +241,7 @@ export function App(props: {
       setBusySince(null)
       setItems((prev) => prev.map((it) => (it.kind === "assistant" ? { ...it, done: true } : it)))
     } else if (event.type === "session.error") {
-      push({ kind: "error", id: localId(), text: msg(p?.error) })
+      push({ kind: "error", id: localId(), text: humanizeError(msg(p?.error)) })
       setBusySince(null)
     } else if (event.type === "permission.updated" && p?.id) {
       setPermission({ id: p.id, sessionID: p.sessionID ?? sessionRef.current ?? "", title: p.title ?? "действие агента" })
@@ -247,12 +284,13 @@ export function App(props: {
         body: {
           model: { providerID: m.providerID, modelID: m.modelID },
           agent: modeRef.current,
+          ...(Object.keys(disabledTools).length ? { tools: disabledTools } : {}),
           parts: [{ type: "text", text }],
         },
         throwOnError: true,
       })
     } catch (error) {
-      push({ kind: "error", id: localId(), text: msg(error) })
+      push({ kind: "error", id: localId(), text: humanizeError(msg(error)) })
       setBusySince(null)
     }
   }
@@ -268,8 +306,7 @@ export function App(props: {
   function runCommand(cmd: Command) {
     switch (cmd.name) {
       case "/выход":
-        player.stop()
-        process.exit(0)
+        quit()
         break
       case "/чистка":
         setItems([])
@@ -485,7 +522,7 @@ function MessageView({ item, ss }: { item: Item; ss: ReturnType<typeof syntaxSty
   if (item.kind === "assistant") {
     return (
       <box flexDirection="column" paddingTop={1}>
-        <text fg={theme.accent}>{glyph.agent} Зарека</text>
+        <text fg={theme.accent}>{glyph.agent} {agentName}</text>
         {parseBlocks(item.text).map((b, idx) =>
           b.type === "code" ? (
             <code key={idx} content={b.content} filetype={b.lang ?? "text"} syntaxStyle={ss} />
@@ -606,10 +643,41 @@ function PermissionKeys({ onRespond }: { onRespond: (r: "once" | "always" | "rej
   return null
 }
 
+// Разворачивает объекты ошибок API (в т.ч. вложенные {name, data:{message}}) в текст.
 function msg(error: unknown): string {
   if (!error) return "неизвестная ошибка"
   if (typeof error === "string") return error
   if (error instanceof Error) return error.message
-  if (typeof error === "object" && "message" in error) return String((error as { message: unknown }).message)
+  if (typeof error === "object") {
+    const o = error as Record<string, unknown>
+    for (const candidate of [
+      o.message,
+      (o.data as Record<string, unknown> | undefined)?.message,
+      (o.error as Record<string, unknown> | undefined)?.message,
+      ((o.error as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.message,
+    ]) {
+      if (typeof candidate === "string" && candidate) return candidate
+    }
+    try {
+      return JSON.stringify(error).slice(0, 300)
+    } catch {
+      return String(error)
+    }
+  }
   return String(error)
+}
+
+// Переводит известные технические ошибки на человеческий.
+function humanizeError(text: string): string {
+  if (/number of tools exceeds/i.test(text)) {
+    return (
+      "Яндекс принимает не более 100 инструментов, а внешние MCP-серверы раздувают список. " +
+      "Наркомпрог отключает внешние MCP автоматически — перезапустите и проверьте " +
+      "~/.config/opencode/opencode.jsonc, если ошибка повторяется."
+    )
+  }
+  if (/context length|maximum context|token limit/i.test(text)) {
+    return "Превышен размер контекста модели. Начните новое дело: /открыть-дело."
+  }
+  return text
 }

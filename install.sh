@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Зарека — установщик пресета Yandex AI Studio для opencode.
+# Наркомпрог — установщик пресета Yandex AI Studio для opencode.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +10,7 @@ PRESET_FILE="${SCRIPT_DIR}/presets/yandex-ai-studio.opencode.json"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 
-bold "Зарека: настройка opencode под Yandex AI Studio"
+bold "НАРКОМПРОГ: настройка opencode под Yandex AI Studio"
 echo
 
 if ! command -v opencode >/dev/null 2>&1; then

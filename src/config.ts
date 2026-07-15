@@ -19,7 +19,7 @@ function readConfig(): {
     raw = readFileSync(configPath, "utf8")
   } catch {
     throw new Error(
-      `Не найден конфиг opencode (${configPath}). Запустите install.sh из репозитория Зареки.`,
+      `Не найден конфиг opencode (${configPath}). Запустите install.sh из репозитория Наркомпрога.`,
     )
   }
   return JSON.parse(raw)
